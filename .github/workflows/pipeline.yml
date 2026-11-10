@@ -1,0 +1,52 @@
+name: pipeline
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m unittest discover -s tests -v
+
+  refresh:
+    needs: test
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements.txt
+      - name: Restore database
+        uses: actions/cache@v4
+        with:
+          path: data/trialparse.db
+          key: trialparse-db-${{ github.run_id }}
+          restore-keys: trialparse-db-
+      - run: python -m trialparse fetch --condition "type 2 diabetes" --max 300
+      - run: python -m trialparse extract --method regex
+      - name: LLM extraction (only new or changed trials; skipped if no key)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            python -m trialparse extract --method llm
+          else
+            echo "No ANTHROPIC_API_KEY secret, skipping LLM step"
+          fi
+      - run: python -m trialparse build-tables
+      - run: python -m trialparse stats
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trialparse-db
+          path: data/trialparse.db
